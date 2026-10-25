@@ -522,9 +522,31 @@ impl FormulaLocale {
             Self::It => ITALIAN,
             _ => return localized,
         };
-        // Unicode-aware case folding: Italian aliases contain accented letters (e.g. "PIÙ.SE"),
-        // which `eq_ignore_ascii_case` would miss when the user types them in lower case.
-        table.iter().find(|(_, it)| it.to_uppercase() == localized.to_uppercase()).map(|(en, _)| *en).unwrap_or(localized)
+        let folded = fold_name(localized);
+        table.iter().find(|(_, it)| fold_name(it) == folded).map(|(en, _)| *en).unwrap_or(localized)
+    }
+}
+
+/// Folds a localized name for lookup: upper case, then the diacritics a Romance alias can carry
+/// reduced to their base letter. Excel itself is not accent-insensitive, but a keyboard that
+/// cannot type `Ù` would otherwise turn `PIÙ.SE` into `#NAME?`, so the unaccented spelling is
+/// accepted as well. It only ever adds input that used to fail, never changes what a name means.
+fn fold_name(name: &str) -> String {
+    name.to_uppercase().chars().map(base_letter).collect()
+}
+
+/// The base letter of an accented Latin character, or the character itself.
+fn base_letter(ch: char) -> char {
+    match ch {
+        'À' | 'Á' | 'Â' | 'Ã' | 'Ä' | 'Å' => 'A',
+        'Ç' => 'C',
+        'È' | 'É' | 'Ê' | 'Ë' => 'E',
+        'Ì' | 'Í' | 'Î' | 'Ï' => 'I',
+        'Ñ' => 'N',
+        'Ò' | 'Ó' | 'Ô' | 'Õ' | 'Ö' => 'O',
+        'Ù' | 'Ú' | 'Û' | 'Ü' => 'U',
+        'Ý' | 'Ÿ' => 'Y',
+        other => other,
     }
 }
 
@@ -719,11 +741,25 @@ mod tests {
             let mut seen: Vec<String> = Vec::new();
             for (en, localized) in table {
                 assert_ne!(en.to_uppercase(), localized.to_uppercase(), "{locale:?}: {en} maps to itself");
-                let folded = localized.to_uppercase();
+                let folded = fold_name(localized);
                 assert!(!seen.contains(&folded), "{locale:?}: {localized} is claimed twice");
                 seen.push(folded);
                 assert_eq!(locale.canonical_name(localized), *en, "{locale:?}: {localized} does not round-trip");
                 assert_eq!(locale.function_name(en), *localized, "{locale:?}: {en} does not display as {localized}");
+            }
+        }
+    }
+
+    /// An alias the fold cannot reduce to ASCII would be reachable only with the accent typed,
+    /// which is the bug this guards: the next accented name added has to teach `base_letter`
+    /// its letter instead of silently going back to accent-sensitive.
+    #[test]
+    fn every_accented_alias_folds_to_ascii() {
+        for (locale, table) in [(FormulaLocale::Es, SPANISH), (FormulaLocale::It, ITALIAN)] {
+            for (en, localized) in table {
+                let folded = fold_name(localized);
+                assert!(folded.is_ascii(), "{locale:?}: {en} -> {localized} folds to {folded}");
+                assert_eq!(locale.canonical_name(&folded), *en, "{locale:?}: {folded} does not resolve to {en}");
             }
         }
     }
